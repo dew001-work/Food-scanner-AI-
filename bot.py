@@ -164,7 +164,7 @@ nutrition and ingredient information."
 
         # Send image + prompt to Gemini
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=[
                 types.Part.from_bytes(
                     data=bytes(image_bytes),
