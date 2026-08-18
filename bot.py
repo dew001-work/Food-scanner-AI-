@@ -1,10 +1,8 @@
 import os
-import json
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from google import genai
 from google.genai import types
-
 from pydantic import BaseModel, Field
 
 from telegram import Update
@@ -33,115 +31,90 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 # ============================================================
-# STRUCTURED FOOD DATA
+# STRUCTURED NUTRITION DATA
 # ============================================================
 
-class Nutrition(BaseModel):
-    serving_size: Optional[str] = Field(
-        default=None,
-        description="Serving size exactly as written on the package."
-    )
+class NutrientValue(BaseModel):
+    value: Optional[float] = None
+    unit: Optional[str] = None
+    basis: Optional[str] = None
+    rda_percent: Optional[float] = None
 
-    calories_kcal: Optional[float] = Field(
-        default=None,
-        description="Calories as visibly stated on the package."
-    )
 
-    protein_g: Optional[float] = Field(
-        default=None,
-        description="Protein in grams as visibly stated."
-    )
+class NutritionData(BaseModel):
 
-    carbohydrates_g: Optional[float] = Field(
-        default=None,
-        description="Carbohydrates in grams as visibly stated."
-    )
+    # Energy
+    energy: Optional[NutrientValue] = None
 
-    total_fat_g: Optional[float] = Field(
-        default=None,
-        description="Total fat in grams as visibly stated."
-    )
+    # Main macros
+    protein: Optional[NutrientValue] = None
+    carbohydrate: Optional[NutrientValue] = None
+    total_sugars: Optional[NutrientValue] = None
+    added_sugars: Optional[NutrientValue] = None
 
-    saturated_fat_g: Optional[float] = Field(
-        default=None,
-        description="Saturated fat in grams as visibly stated."
-    )
+    # Fat
+    total_fat: Optional[NutrientValue] = None
+    saturated_fat: Optional[NutrientValue] = None
+    trans_fat: Optional[NutrientValue] = None
+    monounsaturated_fat: Optional[NutrientValue] = None
+    polyunsaturated_fat: Optional[NutrientValue] = None
+    omega_3: Optional[NutrientValue] = None
+    omega_6: Optional[NutrientValue] = None
 
-    trans_fat_g: Optional[float] = Field(
-        default=None,
-        description="Trans fat in grams as visibly stated."
-    )
+    # Other nutrition
+    fiber: Optional[NutrientValue] = None
+    cholesterol: Optional[NutrientValue] = None
+    sodium: Optional[NutrientValue] = None
 
-    fiber_g: Optional[float] = Field(
-        default=None,
-        description="Fiber in grams as visibly stated."
-    )
-
-    sugar_g: Optional[float] = Field(
-        default=None,
-        description="Total sugar in grams as visibly stated."
-    )
-
-    added_sugar_g: Optional[float] = Field(
-        default=None,
-        description="Added sugar in grams as visibly stated."
-    )
-
-    sodium_mg: Optional[float] = Field(
-        default=None,
-        description="Sodium in milligrams as visibly stated."
+    # Flexible additional nutrients
+    additional_nutrients: Dict[str, NutrientValue] = Field(
+        default_factory=dict
     )
 
 
 class FoodAnalysis(BaseModel):
-    product_name: Optional[str] = Field(
-        default=None,
-        description="Product name only if clearly readable."
-    )
 
-    brand: Optional[str] = Field(
-        default=None,
-        description="Brand only if clearly readable."
-    )
-
-    category: Optional[str] = Field(
-        default=None,
-        description="General product category if reasonably identifiable."
-    )
+    product_name: Optional[str] = None
+    brand: Optional[str] = None
+    category: Optional[str] = None
 
     ingredients: List[str] = Field(
-        default_factory=list,
-        description="Ingredients clearly readable on the package."
+        default_factory=list
     )
 
     ingredient_explanations: List[str] = Field(
-        default_factory=list,
-        description="Simple explanations of notable ingredients actually visible."
+        default_factory=list
     )
-
-    nutrition: Nutrition
 
     allergens: List[str] = Field(
-        default_factory=list,
-        description="Allergens clearly stated or clearly identifiable from the label."
+        default_factory=list
     )
+
+    # --------------------------------------------------------
+    # SERVING INFORMATION
+    # --------------------------------------------------------
+
+    serving_size_value: Optional[float] = None
+    serving_size_unit: Optional[str] = None
+    servings_per_container: Optional[float] = None
+
+    # The label basis used by the nutrition table.
+    # Examples:
+    # "per 100 g"
+    # "per 100 ml"
+    # "per serving"
+    # "per portion"
+    nutrition_basis: Optional[str] = None
+
+    nutrition: NutritionData
 
     notable_points: List[str] = Field(
-        default_factory=list,
-        description="Important observations based only on visible information."
+        default_factory=list
     )
 
-    image_quality: str = Field(
-        description="Image quality: clear, partly_clear, or unclear."
-    )
-
-    confidence: str = Field(
-        description="Overall extraction confidence: high, medium, or low."
-    )
-
-    needs_better_photo: bool = Field(
-        description="True if important information cannot be reliably read."
-    )
+    image_quality: str
+    confidence: str
+    needs_better_photo: bool
 
 
 # ============================================================
@@ -156,8 +129,8 @@ async def start(
     await update.message.reply_text(
         "🥫 Welcome to Food Scanner AI!\n\n"
         "📸 Send me a clear photo of a packaged food label "
-        "and I'll analyze the ingredients and nutrition.\n\n"
-        "💡 For the best result, photograph the back of the "
+        "and I'll analyze its ingredients and nutrition.\n\n"
+        "💡 For best results, photograph the back of the "
         "package showing the ingredients and nutrition panel."
     )
 
@@ -184,33 +157,111 @@ async def help_command(
 
 
 # ============================================================
-# FORMAT FOOD ANALYSIS
+# PYTHON CALCULATIONS
 # ============================================================
 
-def format_analysis(data: FoodAnalysis) -> str:
+def calculate_per_serving(
+    nutrient: Optional[NutrientValue],
+    serving_value: Optional[float],
+    serving_unit: Optional[str]
+) -> Optional[float]:
 
-    nutrition = data.nutrition
+    if nutrient is None:
+        return None
 
-    product_name = (
-        data.product_name
-        if data.product_name
-        else "Not clearly visible"
+    if nutrient.value is None:
+        return None
+
+    if serving_value is None:
+        return None
+
+    basis = (nutrient.basis or "").lower()
+
+    # Only calculate automatically when the label basis
+    # is clearly per 100 g or per 100 ml.
+    if "100 g" in basis and serving_unit:
+        if serving_unit.lower() == "g":
+            return nutrient.value * serving_value / 100
+
+    if "100 ml" in basis and serving_unit:
+        if serving_unit.lower() == "ml":
+            return nutrient.value * serving_value / 100
+
+    return None
+
+
+# ============================================================
+# FORMATTING HELPERS
+# ============================================================
+
+def format_value(
+    nutrient: Optional[NutrientValue]
+) -> str:
+
+    if nutrient is None or nutrient.value is None:
+        return "Not clearly visible"
+
+    unit = nutrient.unit or ""
+
+    return f"{nutrient.value:g} {unit}".strip()
+
+
+def format_rda(
+    nutrient: Optional[NutrientValue]
+) -> str:
+
+    if nutrient is None:
+        return ""
+
+    if nutrient.rda_percent is None:
+        return ""
+
+    return f" ({nutrient.rda_percent:g}% RDA)"
+
+
+def calculated_value_text(
+    nutrient: Optional[NutrientValue],
+    serving_value: Optional[float],
+    serving_unit: Optional[str]
+) -> str:
+
+    calculated = calculate_per_serving(
+        nutrient,
+        serving_value,
+        serving_unit
     )
 
-    brand = (
-        data.brand
-        if data.brand
-        else "Not clearly visible"
-    )
+    if calculated is None:
+        return "Not available"
 
-    category = (
-        data.category
-        if data.category
-        else "Not clearly identified"
-    )
+    unit = nutrient.unit or ""
+
+    return f"{calculated:g} {unit}".strip()
+
+
+# ============================================================
+# FORMAT ANALYSIS
+# ============================================================
+
+def format_analysis(
+    data: FoodAnalysis
+) -> str:
+
+    n = data.nutrition
+
+    product = data.product_name or "Not clearly visible"
+    brand = data.brand or "Not clearly visible"
+    category = data.category or "Not clearly identified"
+
+    # --------------------------------------------------------
+    # INGREDIENTS
+    # --------------------------------------------------------
 
     ingredients_text = (
-        "\n".join(f"• {item}" for item in data.ingredients)
+        "\n".join(
+            f"• {item}"
+            for item in data.ingredients
+        )
         if data.ingredients
         else "Not clearly visible"
     )
@@ -239,303 +290,149 @@ def format_analysis(data: FoodAnalysis) -> str:
         else "Nothing notable could be reliably determined."
     )
 
-    serving = (
-        nutrition.serving_size
-        if nutrition.serving_size
-        else "Not clearly visible"
-    )
+    # --------------------------------------------------------
+    # SERVING
+    # --------------------------------------------------------
 
-    def value(number, unit=""):
-        if number is None:
-            return "Not clearly visible"
-        return f"{number:g}{unit}"
+    if (
+        data.serving_size_value is not None
+        and data.serving_size_unit
+    ):
+        serving_text = (
+            f"{data.serving_size_value:g} "
+            f"{data.serving_size_unit}"
+        )
+    else:
+        serving_text = "Not clearly visible"
 
-    quality_icon = {
-        "clear": "🟢",
-        "partly_clear": "🟡",
-        "unclear": "🔴"
-    }.get(data.image_quality, "🟡")
+    servings_text = ""
 
-    confidence_icon = {
-        "high": "🟢",
-        "medium": "🟡",
-        "low": "🔴"
-    }.get(data.confidence, "🟡")
+    if data.servings_per_container is not None:
+        servings_text = (
+            f"\nServings per container: "
+            f"{data.servings_per_container:g}"
+        )
 
-    result = f"""
-🥫 PRODUCT
+    basis = data.nutrition_basis or "Not clearly visible"
 
-Product: {product_name}
-Brand: {brand}
-Category: {category}
+    # --------------------------------------------------------
+    # NUTRITION TABLE
+    # --------------------------------------------------------
 
-
-🧾 INGREDIENTS
-
-{ingredients_text}
-
-
-🔬 INGREDIENT EXPLANATION
-
-{explanations_text}
-
-
+    nutrition_text = f"""
 📊 NUTRITION
 
-Serving size: {serving}
+Nutrition basis: {basis}
 
-Calories: {value(nutrition.calories_kcal, " kcal")}
-Protein: {value(nutrition.protein_g, " g")}
-Carbohydrates: {value(nutrition.carbohydrates_g, " g")}
-Total fat: {value(nutrition.total_fat_g, " g")}
-Saturated fat: {value(nutrition.saturated_fat_g, " g")}
-Trans fat: {value(nutrition.trans_fat_g, " g")}
-Fiber: {value(nutrition.fiber_g, " g")}
-Sugar: {value(nutrition.sugar_g, " g")}
-Added sugar: {value(nutrition.added_sugar_g, " g")}
-Sodium: {value(nutrition.sodium_mg, " mg")}
+Serving size: {serving_text}{servings_text}
 
+Per label basis:
 
-⚠️ WHAT STANDS OUT
+Calories: {format_value(n.energy)}
+Protein: {format_value(n.protein)}
+Carbohydrates: {format_value(n.carbohydrate)}
+Total sugars: {format_value(n.total_sugars)}
+Added sugars: {format_value(n.added_sugars)}
 
-{notable_text}
+Total fat: {format_value(n.total_fat)}
+Saturated fat: {format_value(n.saturated_fat)}
+Trans fat: {format_value(n.trans_fat)}
+Monounsaturated fat: {format_value(n.monounsaturated_fat)}
+Polyunsaturated fat: {format_value(n.polyunsaturated_fat)}
 
+Omega-3: {format_value(n.omega_3)}
+Omega-6: {format_value(n.omega_6)}
 
-🚨 ALLERGENS
-
-{allergens_text}
-
-
-📷 SCAN QUALITY
-
-{quality_icon} Image: {data.image_quality}
-{confidence_icon} Extraction confidence: {data.confidence}
+Fiber: {format_value(n.fiber)}
+Cholesterol: {format_value(n.cholesterol)}
+Sodium: {format_value(n.sodium)}
 """
 
-    if data.needs_better_photo:
-        result += """
-    
-📸 BETTER PHOTO RECOMMENDED
+    # --------------------------------------------------------
+    # PER-SERVING CALCULATIONS
+    # --------------------------------------------------------
 
-Some important information could not be reliably read.
+    calculated_lines = []
 
-Please send a clearer photo showing the full ingredients
-and nutrition label.
-"""
+    if data.serving_size_value is not None:
 
-    result += """
-    
-⚠️ IMPORTANT
-
-This analysis is based only on information visible in the
-provided image. It does not replace the official product label
-or professional medical/nutrition advice.
-"""
-
-    return result.strip()
-
-
-# ============================================================
-# ANALYZE PHOTO
-# ============================================================
-
-async def analyze_food_photo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    try:
-
-        await update.message.reply_text(
-            "🔍 Reading your food label...\n\n"
-            "I'm extracting the information first, "
-            "then checking it before showing you the result."
+        calculated_lines.append(
+            f"Calories: "
+            f"{calculated_value_text(n.energy, data.serving_size_value, data.serving_size_unit)}"
         )
 
-        # ----------------------------------------------------
-        # GET TELEGRAM IMAGE
-        # ----------------------------------------------------
-
-        photo = update.message.photo[-1]
-
-        telegram_file = await photo.get_file()
-
-        image_bytes = await telegram_file.download_as_bytearray()
-
-        # ----------------------------------------------------
-        # GEMINI INSTRUCTIONS
-        # ----------------------------------------------------
-
-        prompt = """
-You are Food Scanner AI.
-
-Your job is to extract information from a packaged-food
-product image.
-
-This is an INFORMATION EXTRACTION task first.
-Do not guess.
-
-STRICT RULES:
-
-1. Only report information that is visible or clearly readable.
-2. If the product name cannot be read, return null.
-3. If the brand cannot be read, return null.
-4. If ingredients are not visible, return an empty list.
-5. NEVER invent ingredients.
-6. NEVER invent nutrition numbers.
-7. NEVER estimate a nutrition number from appearance.
-8. NEVER invent a serving size.
-9. Keep the serving size exactly as printed.
-10. Do not convert grams to teaspoons, tablespoons, cups,
-    servings, or other units.
-11. Do not assume the product type means a particular ingredient.
-12. Do not identify a specific oil, grain, sweetener, etc.
-    unless the label supports it.
-13. Do not treat your general knowledge as something written
-    on the package.
-14. If a nutrition value is not readable, return null.
-15. If an ingredient is only partially readable, do not guess
-    the missing text.
-16. Allergens should only be reported if clearly stated or
-    reliably identifiable from visible ingredients.
-17. Do not diagnose medical conditions.
-18. Do not claim that a food will cause or prevent a disease.
-19. Do not simply label food "healthy" or "unhealthy".
-20. notable_points must be based on visible facts.
-
-IMPORTANT:
-
-Separate LABEL FACTS from INTERPRETATION.
-
-For ingredient_explanations:
-Explain only notable ingredients that are actually visible.
-
-For notable_points:
-Mention useful observations such as:
-- high/low amount of a nutrient relative to the declared values
-- presence of added sugar if explicitly listed
-- presence of trans fat if explicitly listed
-- presence of allergens
-- fortification
-- unusual additives
-
-Do not invent health effects.
-
-IMAGE QUALITY:
-
-"clear" = important information can be read reliably.
-
-"partly_clear" = some important information can be read,
-but some information is missing or difficult to read.
-
-"unclear" = the label cannot be reliably analyzed.
-
-CONFIDENCE:
-
-"high" = most important information is clearly readable.
-
-"medium" = useful information is readable but some information
-is uncertain or missing.
-
-"low" = important information is difficult to read.
-
-needs_better_photo should be true whenever important information
-cannot be reliably extracted.
-
-Return ONLY the structured JSON requested by the schema.
-"""
-
-
-        # ----------------------------------------------------
-        # GEMINI STRUCTURED OUTPUT
-        # ----------------------------------------------------
-
-        response = gemini_client.models.generate_content(
-
-            model="gemini-3.6-flash",
-
-            contents=[
-                types.Part.from_bytes(
-                    data=bytes(image_bytes),
-                    mime_type="image/jpeg",
-                ),
-                prompt,
-            ],
-
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=FoodAnalysis,
-            ),
+        calculated_lines.append(
+            f"Protein: "
+            f"{calculated_value_text(n.protein, data.serving_size_value, data.serving_size_unit)}"
         )
 
-        # ----------------------------------------------------
-        # PARSE STRUCTURED RESULT
-        # ----------------------------------------------------
+        calculated_lines.append(
+            f"Carbohydrates: "
+            f"{calculated_value_text(n.carbohydrate, data.serving_size_value, data.serving_size_unit)}"
+        )
 
-        if not response.text:
-            raise ValueError(
-                "Gemini returned an empty response."
+        calculated_lines.append(
+            f"Total fat: "
+            f"{calculated_value_text(n.total_fat, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+        calculated_lines.append(
+            f"Saturated fat: "
+            f"{calculated_value_text(n.saturated_fat, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+        calculated_lines.append(
+            f"Trans fat: "
+            f"{calculated_value_text(n.trans_fat, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+        calculated_lines.append(
+            f"Total sugars: "
+            f"{calculated_value_text(n.total_sugars, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+        calculated_lines.append(
+            f"Added sugars: "
+            f"{calculated_value_text(n.added_sugars, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+        calculated_lines.append(
+            f"Sodium: "
+            f"{calculated_value_text(n.sodium, data.serving_size_value, data.serving_size_unit)}"
+        )
+
+    if calculated_lines:
+        nutrition_text += (
+            "\n\n"
+            "🧮 CALCULATED PER SERVING\n\n"
+            + "\n".join(
+                calculated_lines
+            )
+            + "\n\n"
+            "ℹ️ Calculated by Food Scanner AI "
+            "from the label's declared values."
+        )
+
+    # --------------------------------------------------------
+    # RDA
+    # --------------------------------------------------------
+
+    rda_items = []
+
+    for name, nutrient in [
+        ("Calories", n.energy),
+        ("Added sugar", n.added_sugars),
+        ("Total fat", n.total_fat),
+        ("Saturated fat", n.saturated_fat),
+        ("Trans fat", n.trans_fat),
+        ("Sodium", n.sodium),
+    ]:
+
+        rda = format_rda(nutrient)
+
+        if rda:
+            rda_items.append(
+                f"• {name}{rda}"
             )
 
-        data = FoodAnalysis.model_validate_json(
-            response.text
-        )
-
-        # ----------------------------------------------------
-        # FORMAT TELEGRAM RESPONSE
-        # ----------------------------------------------------
-
-        result = format_analysis(data)
-
-        # Telegram message size protection
-        if len(result) > 4000:
-            result = result[:3950] + "\n\n[Response shortened]"
-
-        await update.message.reply_text(result)
-
-    except Exception as error:
-
-        print(
-            f"Food analysis error: "
-            f"{type(error).__name__}: {error}"
-        )
-
-        await update.message.reply_text(
-            "⚠️ I couldn't reliably analyze this image.\n\n"
-            "Please send a clearer photo showing the full "
-            "ingredients list and nutrition panel."
-        )
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    app = Application.builder().token(
-        TELEGRAM_BOT_TOKEN
-    ).build()
-
-    app.add_handler(
-        CommandHandler("start", start)
-    )
-
-    app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    app.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            analyze_food_photo
-        )
-    )
-
-    print("Food Scanner AI is running...")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+    if rda_items:
