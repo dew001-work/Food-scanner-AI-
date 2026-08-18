@@ -435,4 +435,31 @@ Sodium: {format_value(n.sodium)}
                 f"• {name}{rda}"
             )
 
+        # --------------------------------------------------------
+    # RDA
+    # --------------------------------------------------------
+
+    rda_items = []
+
+    for name, nutrient in [
+        ("Calories", n.energy),
+        ("Added sugar", n.added_sugars),
+        ("Total fat", n.total_fat),
+        ("Saturated fat", n.saturated_fat),
+        ("Trans fat", n.trans_fat),
+        ("Sodium", n.sodium),
+    ]:
+
+        rda = format_rda(nutrient)
+
+        if rda:
+            rda_items.append(
+                f"• {name}{rda}"
+            )
+
     if rda_items:
+        nutrition_text += (
+            "\n\n"
+            "📌 LABEL %RDA\n\n"
+            + "\n".join(rda_items)
+        )
